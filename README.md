@@ -9,22 +9,35 @@ Script em Node.js + Puppeteer que automatiza buscas no Google Maps e coleta **em
 3. Para cada nicho, percorre os cards de resultados, rolando a lista para carregar mais.
 4. A distância de cada empresa até o centro é calculada, e as que ficam **fora do raio são descartadas**.
 5. Salva apenas empresas **sem site** e **com telefone**, ignorando duplicatas.
-6. Cada lead aparece no terminal assim que é capturado e é gravado imediatamente no `leads.json`.
-7. Ao final (ou com Ctrl+C), exibe uma tabela com os leads novos e a contagem por nicho.
+6. Cada lead aparece no terminal assim que é capturado e é gravado imediatamente no `leads.json` e no `leads_prontos_crm.csv`.
+7. Opcionalmente, também busca e apresenta leads que possuem site para confirmação manual (`y/n`).
+8. Ao final (ou com Ctrl+C), exibe uma tabela com os leads novos e a contagem por nicho.
 
 ## Requisitos
 
-- [Node.js](https://nodejs.org/) 18 ou superior
+- [Node.js](https://nodejs.org/) 18 ou superior (recomendado: versão LTS)
 - Google Chrome ou Microsoft Edge instalado (opcional, veja abaixo)
 - Windows, Linux ou macOS
 
 ## Instalação
 
+1. Instale a versão LTS do Node.js pelo site oficial: <https://nodejs.org/>. O npm é instalado junto com o Node.js.
+2. Feche e abra novamente o terminal e confirme a instalação:
+
 ```bash
-npm install puppeteer
+node --version
+npm --version
 ```
 
-O Puppeteer baixa o próprio Chromium na instalação. Se você já tem Chrome ou Edge, o script tenta usá-los automaticamente.
+3. No terminal, entre na pasta do projeto (a pasta que contém `package.json`) e instale as dependências:
+
+```bash
+npm install
+```
+
+O `npm install` usa o `package.json` e o `package-lock.json` para instalar as dependências do projeto, incluindo o Puppeteer. O Puppeteer baixa o Chromium necessário; se você já tem Chrome ou Edge, o script tenta usá-los automaticamente.
+
+No Windows, você pode abrir o PowerShell na pasta do projeto ou usar `cd` para chegar até ela antes de executar `npm install`.
 
 ## Uso
 
@@ -35,6 +48,7 @@ node minerar_leads.js
 ```
 
 O script pergunta localização, raio, nichos e meta. Pressione Enter para aceitar o valor padrão de cada pergunta.
+Esses valores são carregados de [`config.json`](./config.json), que pode ser editado antes da execução.
 
 ### Por argumentos
 
@@ -42,6 +56,8 @@ O script pergunta localização, raio, nichos e meta. Pressione Enter para aceit
 node minerar_leads.js --local "Pouso Alegre, MG" --raio 30
 node minerar_leads.js --local "Itajuba, MG; Varginha, MG" --raio 15 --nichos "Pizzaria, Pet Shop" --meta 20
 node minerar_leads.js --local "-22.4256,-45.4528" --raio 10 --headless
+node minerar_leads.js --incluir-com-site
+node minerar_leads.js --assigned "Nome do responsável"
 ```
 
 | Opção | Descrição | Padrão |
@@ -51,9 +67,38 @@ node minerar_leads.js --local "-22.4256,-45.4528" --raio 10 --headless
 | `--nichos` | Segmentos separados por vírgula | lista no topo do script |
 | `--meta` | Leads válidos por combinação nicho + local | `15` |
 | `--headless` | Executa sem abrir a janela do navegador | desligado |
+| `--incluir-com-site` | Inclui leads com site e pede confirmação antes de salvar | desligado |
+| `--assigned` | Responsável exportado no CSV do CRM nesta execução | valor do `config.json` |
 | `--ajuda` | Mostra a ajuda | — |
 
-Os valores padrão ficam no topo do arquivo (`NICHOS_PADRAO`, `LOCAIS_PADRAO`, `RAIO_PADRAO_KM`, `META_PADRAO`).
+Os valores padrão ficam em `config.json`. No modo interativo, o script pergunta no início de cada execução se deve incluir leads com site e qual responsável deve ser usado no CRM; pressione Enter para aceitar os padrões do arquivo. Os argumentos informados na linha de comando têm prioridade sobre o arquivo; por exemplo,
+`--raio 30` altera o raio apenas naquela execução. A flag `--incluir-com-site` ativa essa opção diretamente, e `--assigned "Nome"` define o responsável somente para aquela execução. O campo `local` pode conter vários locais separados por `;` e `nichos` é uma lista JSON. Leads de execuções anteriores permanecem com o responsável vazio no CSV.
+
+Exemplo de configuração:
+
+```json
+{
+  "local": "Itajuba, MG",
+  "raio": 20,
+  "nichos": ["Pizzaria", "Pet Shop"],
+  "meta": 15,
+  "headless": false,
+  "incluir_com_site": false,
+  "assigned": "Nome do responsável"
+}
+```
+
+`incluir_com_site` fica desativado por padrão e preserva o comportamento de buscar
+somente leads sem site. Quando definido como `true`, o Puppeteer coleta o site
+informado no Google Maps (ou encontrado na busca de fallback), exibe a URL no
+terminal e pergunta se o lead deve ser salvo:
+
+```text
+O site "https://exemplo.com" pertence a "Pizzaria Exemplo"? Salvar no banco? (y/n):
+```
+
+Responda `y` para adicionar o lead ou `n` para ignorá-lo. Essa confirmação exige
+um terminal interativo.
 
 ### Escolhendo o navegador
 
@@ -91,6 +136,18 @@ node minerar_leads.js
 - `telefone`: apenas dígitos, com prefixo `55` (formato aceito por links `wa.me`).
 - `distancia_km`: distância até o centro da busca (pode ser `null` se o Maps não informar coordenadas).
 - `status`: começa como `pendente`, para você controlar o andamento da prospecção.
+
+Além do JSON, o arquivo `leads_prontos_crm.csv` é recriado após cada novo lead, com as colunas necessárias para o import no CRM. Todos os campos são delimitados por aspas duplas; endereço, nicho, cidade, distância, redes sociais e observações ficam reunidos em `Notes`, cada tópico em uma nova linha. São identificadas redes do Instagram, Facebook, LinkedIn, TikTok e YouTube quando o Google Maps disponibilizar os links.
+
+`leads.json`, `leads.csv` e `leads_prontos_crm.csv` são arquivos locais gerados durante a execução e não são enviados ao Git.
+
+Para apagar os leads atuais e manter apenas a estrutura vazia dos arquivos:
+
+```bash
+node limpar_leads.js
+```
+
+Esse comando redefine `leads.json` para `[]` e mantém somente o cabeçalho em `leads_prontos_crm.csv`.
 
 Se o arquivo já existir, o script o carrega e **não duplica** telefones já salvos, então é seguro rodar várias vezes. Leads antigos, sem `endereco` e `distancia_km`, continuam válidos.
 

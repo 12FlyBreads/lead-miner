@@ -1,0 +1,18 @@
+# Dependências instaladas localmente pelo npm
+node_modules/
+
+# Logs gerados por ferramentas do Node/npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dados gerados localmente pelo minerador
+leads.json
+leads.csv
+leads_prontos_crm.csv
+
+# Ambientes virtuais Python
+venv/
+.venv/
+env/

@@ -1,0 +1,20 @@
+{
+  "local": "São José dos Campos, SP",
+  "raio": 50,
+  "nichos": [
+    "Clinica Odontologica",
+    "Clinica de Estetica",
+    "Pizzaria",
+    "Hamburgueria",
+    "Oficina Mecanica",
+    "Pet Shop",
+    "Imobiliaria",
+    "Salao de Beleza",
+    "Escritorio de Contabilidade",
+    "Academia"
+  ],
+  "meta": 1,
+  "headless": false,
+  "incluir_com_site": false,
+  "assigned": ""
+}

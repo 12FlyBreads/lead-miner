@@ -4,27 +4,34 @@ const path = require('path');
 const readline = require('readline/promises');
 
 // ==========================================
-// 1. CONFIGURAÇÕES PADRÃO
-// (podem ser sobrescritas por argumentos ou pelas perguntas do terminal)
+// 1. CONFIGURAÇÕES E ARQUIVOS
 // ==========================================
-const NICHOS_PADRAO = [
-    'Clinica Odontologica',
-    'Clinica de Estetica',
-    'Pizzaria',
-    'Hamburgueria',
-    'Oficina Mecanica',
-    'Pet Shop',
-    'Imobiliaria',
-    'Salao de Beleza',
-    'Escritorio de Contabilidade',
-    'Academia'
-];
-
-const LOCAIS_PADRAO = ['Itajuba, MG'];
-const RAIO_PADRAO_KM = 20;
-const META_PADRAO = 15; // leads válidos por combinação (nicho + local)
+const CAMINHO_CONFIGURACAO = path.join(__dirname, 'config.json');
 const MAX_FORA_DO_RAIO_SEGUIDOS = 8; // encerra a busca quando só aparecem resultados longe demais
+const MAX_SITES_FALLBACK = 5;
 const CAMINHO_ARQUIVO = path.join(__dirname, 'leads.json');
+const CAMINHO_CSV_CRM = path.join(__dirname, 'leads_prontos_crm.csv');
+const CABECALHO_CSV_CRM = [
+    'Opportunity name',
+    'Contact Name',
+    'phone',
+    'email',
+    'pipeline',
+    'stage',
+    'Lead Value',
+    'source',
+    'assigned',
+    'lost reason name',
+    'Followers',
+    'Notes',
+    'tags',
+    'status',
+    'Expected Close Date',
+    'Forecast Probability',
+    'Data da venda',
+    'Opportunity ID',
+    'Contact ID'
+];
 
 // ==========================================
 // 2. TERMINAL (CORES E AJUDA)
@@ -40,6 +47,7 @@ const c = {
 };
 
 function mostrarAjuda() {
+    const config = carregarConfiguracao();
     console.log(`
 ${c.negrito}Minerador de Leads - Google Maps${c.reset}
 
@@ -51,12 +59,19 @@ Opções:
   --local     Cidade, endereço ou coordenadas "lat,lng". Separe vários com ";"
               Ex.: --local "Itajuba, MG; Pouso Alegre, MG"
               Ex.: --local "-22.4256,-45.4528"
-  --raio      Raio de atuação em km a partir do local (padrão: ${RAIO_PADRAO_KM})
+  --raio      Raio de atuação em km a partir do local (padrão: ${config.raio})
   --nichos    Segmentos separados por vírgula
               Ex.: --nichos "Pizzaria, Pet Shop, Academia"
-  --meta      Leads válidos por combinação nicho + local (padrão: ${META_PADRAO})
+  --meta      Leads válidos por combinação nicho + local (padrão: ${config.meta})
   --headless  Executa sem abrir a janela do navegador
+  --incluir-com-site
+              Inclui leads com site e pede confirmação (y/n) antes de salvar
+  --assigned  Responsável exportado no CSV do CRM nesta execução
+              Ex.: --assigned "Nome do responsável"
   --ajuda     Mostra esta mensagem
+
+O campo "incluir_com_site" no config.json permite salvar leads que possuem site.
+Quando true, o site aparece no terminal e o script pergunta se deve salvar (y/n).
 `);
 }
 
@@ -64,6 +79,68 @@ Opções:
 // 3. FUNÇÕES UTILITÁRIAS E PERSISTÊNCIA
 // ==========================================
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function fecharPaginaSegura(pagina) {
+    if (!pagina) return;
+    if (typeof pagina.isClosed === 'function' && pagina.isClosed()) return;
+    try {
+        await pagina.close();
+    } catch (erro) {
+        if (!/No target with given id|Target closed|Session closed/i.test(erro.message || '')) {
+            console.log(`${c.amarelo}⚠️ Não foi possível fechar uma aba do navegador: ${erro.message}${c.reset}`);
+        }
+    }
+}
+
+async function fecharNavegadorSeguro(navegador) {
+    if (!navegador) return;
+    if (typeof navegador.isConnected === 'function' && !navegador.isConnected()) return;
+    if (typeof navegador.connected === 'boolean' && !navegador.connected) return;
+    try {
+        await navegador.close();
+    } catch (erro) {
+        if (!/No target with given id|Target closed|Session closed/i.test(erro.message || '')) {
+            console.log(`${c.amarelo}⚠️ Não foi possível fechar o navegador: ${erro.message}${c.reset}`);
+        }
+    }
+}
+
+function carregarConfiguracao() {
+    try {
+        const configuracao = JSON.parse(fs.readFileSync(CAMINHO_CONFIGURACAO, 'utf8'));
+        if (!configuracao || typeof configuracao !== 'object' || Array.isArray(configuracao)) {
+            throw new Error('o conteúdo precisa ser um objeto JSON');
+        }
+
+        if (typeof configuracao.local !== 'string' || !configuracao.local.trim()) {
+            throw new Error('o campo "local" precisa ser um texto não vazio');
+        }
+        if (!Number.isFinite(Number(configuracao.raio)) || Number(configuracao.raio) <= 0) {
+            throw new Error('o campo "raio" precisa ser um número maior que zero');
+        }
+        if (!Array.isArray(configuracao.nichos) ||
+            configuracao.nichos.length === 0 ||
+            configuracao.nichos.some(nicho => typeof nicho !== 'string' || !nicho.trim())) {
+            throw new Error('o campo "nichos" precisa ser uma lista de textos não vazia');
+        }
+        if (!Number.isInteger(Number(configuracao.meta)) || Number(configuracao.meta) <= 0) {
+            throw new Error('o campo "meta" precisa ser um número inteiro maior que zero');
+        }
+        if (typeof configuracao.headless !== 'boolean') {
+            throw new Error('o campo "headless" precisa ser true ou false');
+        }
+        if (typeof configuracao.incluir_com_site !== 'boolean') {
+            throw new Error('o campo "incluir_com_site" precisa ser true ou false');
+        }
+        if (typeof configuracao.assigned !== 'string') {
+            throw new Error('o campo "assigned" precisa ser um texto');
+        }
+
+        return configuracao;
+    } catch (erro) {
+        throw new Error(`Não foi possível carregar ${CAMINHO_CONFIGURACAO}: ${erro.message}`);
+    }
+}
 
 // Localiza um navegador instalado conforme o sistema operacional.
 // Retorna undefined para o Puppeteer usar o Chromium que ele mesmo baixou.
@@ -104,6 +181,273 @@ function formatarTelefone(telefoneExtraido) {
     return limpo;
 }
 
+const URLS_BLACKLIST_SITE = [
+    'ifood',
+    'tripadvisor',
+    'yelp',
+    'guiamais',
+    'cnpj',
+    'casadosdados',
+    'reclameaqui',
+    'facebook',
+    'instagram',
+    'linkedin',
+    'youtube',
+    'tiktok',
+    'linktr.ee'
+];
+
+function normalizarTexto(texto) {
+    return String(texto || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+}
+
+function normalizarTelefoneParaValidacao(telefone) {
+    return String(telefone || '').replace(/\D/g, '');
+}
+
+function extrairPalavrasPrincipais(nome) {
+    const palavrasIgnoradas = new Set([
+        'a', 'as', 'o', 'os', 'e', 'de', 'da', 'do', 'das', 'dos',
+        'em', 'no', 'na', 'para', 'por', 'com', 'ltda', 'me', 'eireli'
+    ]);
+
+    return normalizarTexto(nome)
+        .split(/[^a-z0-9]+/)
+        .filter(palavra => palavra.length >= 3 && !palavrasIgnoradas.has(palavra));
+}
+
+function extrairCidadeDoEndereco(endereco) {
+    const partesEndereco = String(endereco || '')
+        .replace(/\s+/g, ' ')
+        .split(',')
+        .map(parte => parte.trim())
+        .filter(Boolean);
+
+    for (const parte of partesEndereco) {
+        const correspondencia = parte.match(/^(.+?)\s*-\s*[A-Z]{2}$/i);
+        if (correspondencia && correspondencia[1].trim()) {
+            return correspondencia[1].trim();
+        }
+    }
+
+    for (let indice = 1; indice < partesEndereco.length; indice++) {
+        if (/^[A-Z]{2}$/i.test(partesEndereco[indice])) {
+            const cidade = partesEndereco[indice - 1]
+                .replace(/^.*-\s*/, '')
+                .trim();
+            if (cidade && !/\d/.test(cidade)) {
+                return cidade;
+            }
+        }
+    }
+
+    return null;
+}
+
+function urlEstaNaBlacklist(url) {
+    const urlNormalizada = normalizarTexto(url);
+    return URLS_BLACKLIST_SITE.some(termo => urlNormalizada.includes(termo));
+}
+
+function obterUrlResultado(url) {
+    try {
+        const urlCompleta = new URL(url, 'https://duckduckgo.com');
+        const urlRedirecionada = urlCompleta.searchParams.get('uddg');
+        return urlRedirecionada ? decodeURIComponent(urlRedirecionada) : urlCompleta.href;
+    } catch (erro) {
+        return null;
+    }
+}
+
+function extrairRedeSocial(url) {
+    try {
+        const urlValida = new URL(url);
+        const hostname = urlValida.hostname.toLowerCase().replace(/^www\./, '');
+        if (hostname === 'instagram.com' || hostname.endsWith('.instagram.com')) {
+            return ['Instagram', urlValida.href];
+        }
+        if (hostname === 'facebook.com' || hostname.endsWith('.facebook.com')) {
+            return ['Facebook', urlValida.href];
+        }
+    } catch (erro) {
+        return null;
+    }
+    return null;
+}
+
+function siteFoiValidado(textoSite, lead) {
+    const textoNormalizado = normalizarTexto(textoSite);
+    const telefoneLead = normalizarTelefoneParaValidacao(lead.telefone);
+
+    if (telefoneLead && normalizarTelefoneParaValidacao(textoSite).includes(telefoneLead)) {
+        return true;
+    }
+
+    const cidade = normalizarTexto(lead.cidade).trim();
+    const palavrasNome = extrairPalavrasPrincipais(lead.nome);
+    return Boolean(
+        cidade &&
+        textoNormalizado.includes(cidade) &&
+        palavrasNome.some(palavra => textoNormalizado.includes(palavra))
+    );
+}
+
+async function buscarDadosFaltantes(lead, paginaPuppeteer) {
+    const siteExistente = lead && typeof lead.site === 'string' && lead.site.trim()
+        ? lead.site.trim()
+        : null;
+    const redesExistentes = lead && lead.redes_sociais && typeof lead.redes_sociais === 'object'
+        ? { ...lead.redes_sociais }
+        : {};
+    const precisaBuscarSite = !siteExistente;
+    const precisaBuscarRedes = !redesExistentes.Instagram || !redesExistentes.Facebook;
+
+    if (!lead || (!precisaBuscarSite && !precisaBuscarRedes)) {
+        if (lead && !precisaBuscarSite && !precisaBuscarRedes) {
+            console.log(`${c.cinza}ℹ️ Fallback não necessário para "${lead.nome}": site e redes já cadastrados.${c.reset}`);
+        }
+        return {
+            site: siteExistente,
+            siteValidado: Boolean(siteExistente),
+            redes_sociais: redesExistentes
+        };
+    }
+
+    if (!lead.nome || !lead.cidade || !paginaPuppeteer) {
+        console.log(`${c.amarelo}⚠️ Fallback ignorado: lead sem nome, cidade ou página disponível.${c.reset}`);
+        return { site: null, siteValidado: false, redes_sociais: redesExistentes };
+    }
+
+    let candidatosSite = [];
+    try {
+        const consulta = `"${lead.nome} ${lead.cidade}"`;
+        const urlBusca = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(consulta)}`;
+        await paginaPuppeteer.goto(urlBusca, { waitUntil: 'domcontentloaded', timeout: 10000 });
+
+        const resultados = await paginaPuppeteer.evaluate(() => Array.from(
+            document.querySelectorAll('a[data-testid="result-title-a"], a.result__a')
+        ).map(link => ({
+            href: link.href,
+            texto: link.innerText || ''
+        })));
+        if (!resultados.length) {
+            const tipoBusca = precisaBuscarSite ? 'site ou redes sociais' : 'redes sociais';
+            console.log(`${c.amarelo}⚠️ Busca de ${tipoBusca} sem resultados para "${lead.nome}".${c.reset}`);
+        }
+
+        for (const resultado of resultados) {
+            const url = obterUrlResultado(resultado.href);
+            if (!url) continue;
+
+            const rede = extrairRedeSocial(url);
+            if (rede && !redesExistentes[rede[0]]) {
+                redesExistentes[rede[0]] = rede[1];
+            }
+
+            if (precisaBuscarSite && !urlEstaNaBlacklist(url) && !candidatosSite.includes(url)) {
+                candidatosSite.push(url);
+            }
+        }
+
+        if (!precisaBuscarSite) {
+            return {
+                site: siteExistente,
+                siteValidado: true,
+                redes_sociais: redesExistentes
+            };
+        }
+
+        for (const candidato of candidatosSite.slice(0, MAX_SITES_FALLBACK)) {
+            try {
+                console.log(`${c.cinza}🔎 Site candidato para "${lead.nome}": ${candidato}${c.reset}`);
+                await paginaPuppeteer.goto(candidato, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 10000
+                });
+                const textoSite = await paginaPuppeteer.evaluate(() => document.body?.innerText || '');
+                if (siteFoiValidado(textoSite, lead)) {
+                    const siteValidado = paginaPuppeteer.url();
+                    console.log(`${c.verde}✅ Site confirmado por telefone ou cidade/nome: ${siteValidado}${c.reset}`);
+                    return {
+                        site: siteValidado,
+                        siteValidado: true,
+                        redes_sociais: redesExistentes
+                    };
+                }
+                console.log(`${c.amarelo}⚠️ Site encontrado, mas sem confirmação por telefone ou cidade/nome: ${candidato}${c.reset}`);
+            } catch (erroSite) {
+                console.log(`${c.amarelo}⚠️ Site candidato indisponível (${candidato}): ${erroSite.message}${c.reset}`);
+            }
+        }
+    } catch (erroBusca) {
+        console.log(`${c.amarelo}⚠️ Não foi possível buscar dados adicionais para "${lead.nome}": ${erroBusca.message}${c.reset}`);
+        if (!precisaBuscarSite) {
+            return {
+                site: siteExistente,
+                siteValidado: true,
+                redes_sociais: redesExistentes
+            };
+        }
+    }
+
+    if (!precisaBuscarSite) {
+        return {
+            site: siteExistente,
+            siteValidado: true,
+            redes_sociais: redesExistentes
+        };
+    }
+
+    const siteCandidato = candidatosSite[0] || null;
+    if (siteCandidato) {
+        console.log(`${c.amarelo}⚠️ Site candidato mantido para verificação manual: ${siteCandidato}${c.reset}`);
+    }
+    return {
+        site: siteCandidato,
+        siteValidado: false,
+        redes_sociais: redesExistentes
+    };
+}
+
+async function confirmarSite(lead, site) {
+    console.log(`\n${c.amarelo}${'─'.repeat(70)}${c.reset}`);
+    console.log(`${c.amarelo}🌐 Site encontrado para verificação manual${c.reset}`);
+    console.log(`${c.negrito}${site}${c.reset}`);
+    console.log(`${c.amarelo}${'─'.repeat(70)}${c.reset}`);
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        console.log(`${c.amarelo}⚠️ Terminal sem entrada interativa; lead ignorado.${c.reset}`);
+        return false;
+    }
+
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        terminal: true
+    });
+
+    try {
+        while (true) {
+            const resposta = (await rl.question(
+                `${c.amarelo}O site "${site}" pertence a "${lead.nome}"? Salvar no banco? (y/n): ${c.reset}`
+            )).trim().toLowerCase();
+
+            if (resposta === 'y') return true;
+            if (resposta === 'n') return false;
+
+            console.log(`${c.amarelo}Digite apenas "y" para salvar ou "n" para ignorar.${c.reset}`);
+        }
+    } catch (erro) {
+        console.log(`${c.amarelo}⚠️ Não foi possível confirmar o site manualmente; lead ignorado.${c.reset}`);
+        return false;
+    } finally {
+        rl.close();
+    }
+}
+
 function carregarLeadsExistentes() {
     if (fs.existsSync(CAMINHO_ARQUIVO)) {
         try {
@@ -118,6 +462,60 @@ function carregarLeadsExistentes() {
 function salvarNovoLead(novoLead, listaCompleta) {
     listaCompleta.push(novoLead);
     fs.writeFileSync(CAMINHO_ARQUIVO, JSON.stringify(listaCompleta, null, 2), 'utf8');
+}
+
+function exportarParaCRM(leads, assigned, leadsDaRonda = []) {
+    const escaparCsv = (valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`;
+    const telefonesDaRonda = new Set(leadsDaRonda.map(lead => lead.telefone));
+    const nomeParaCRM = (lead) => lead.cidade
+        ? `${lead.nome} - ${lead.cidade}`
+        : lead.nome;
+
+    const linhas = [
+        CABECALHO_CSV_CRM.map(escaparCsv).join(',')
+    ];
+
+    for (const lead of leads) {
+        const observacoesSite = lead.observacoes || (
+            lead.site ? 'Possui site próprio.' : 'Não possui site próprio identificado.'
+        );
+        const notas = [
+            lead.endereco && `Endereço: ${lead.endereco}`,
+            lead.site && `Site: ${lead.site}`,
+            lead.nicho && `Nicho: ${lead.nicho}`,
+            lead.cidade && `Cidade: ${lead.cidade}`,
+            lead.redes_sociais && Object.entries(lead.redes_sociais)
+                .map(([rede, url]) => `${rede}: ${url}`)
+                .join(' | '),
+            `Observações: ${observacoesSite}`
+        ].filter(Boolean).join('\n');
+
+        const dados = [
+            nomeParaCRM(lead),
+            nomeParaCRM(lead),
+            lead.telefone,
+            lead.email,
+            'Pipeline de Vendas',
+            'Novo Lead',
+            '0',
+            'Google',
+            telefonesDaRonda.has(lead.telefone) ? assigned : '',
+            '',
+            '',
+            notas,
+            '',
+            'open',
+            '',
+            '',
+            '',
+            '',
+            ''
+        ];
+
+        linhas.push(dados.map(escaparCsv).join(','));
+    }
+
+    fs.writeFileSync(CAMINHO_CSV_CRM, `${linhas.join('\r\n')}\r\n`, 'utf8');
 }
 
 // ==========================================
@@ -147,47 +545,69 @@ async function perguntar(rl, texto, padrao) {
 
 async function obterConfig() {
     const args = lerArgumentos();
+    const configPadrao = carregarConfiguracao();
 
     if (args.ajuda || args.help) {
         mostrarAjuda();
         process.exit(0);
     }
 
-    let local = args.local;
-    let raio = args.raio;
-    let nichos = args.nichos;
-    let meta = args.meta;
+    let local = args.local ?? configPadrao.local;
+    let raio = args.raio ?? configPadrao.raio;
+    let nichos = args.nichos ?? configPadrao.nichos.join(', ');
+    let meta = args.meta ?? configPadrao.meta;
+    let incluirComSite = args['incluir-com-site'] === undefined
+        ? configPadrao.incluir_com_site
+        : true;
+    let assigned = args.assigned === undefined
+        ? configPadrao.assigned
+        : String(args.assigned);
 
     // Sem nenhum argumento e com terminal interativo: pergunta as opções
     const interativo = process.argv.length <= 2 && process.stdin.isTTY;
     if (interativo) {
         console.log(`${c.negrito}⚙️  Configuração da busca${c.reset} ${c.cinza}(Enter aceita o padrão)${c.reset}\n`);
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        local = await perguntar(rl, '📍 Localização (cidade, endereço ou "lat,lng"; vários com ";")', LOCAIS_PADRAO.join('; '));
-        raio = await perguntar(rl, '📏 Raio de atuação em km', RAIO_PADRAO_KM);
-        nichos = await perguntar(rl, '🏷️  Nichos (separados por vírgula)', NICHOS_PADRAO.join(', '));
-        meta = await perguntar(rl, '🎯 Meta de leads por busca', META_PADRAO);
+        local = await perguntar(rl, '📍 Localização (cidade, endereço ou "lat,lng"; vários com ";")', configPadrao.local);
+        raio = await perguntar(rl, '📏 Raio de atuação em km', configPadrao.raio);
+        nichos = await perguntar(rl, '🏷️  Nichos (separados por vírgula)', configPadrao.nichos.join(', '));
+        meta = await perguntar(rl, '🎯 Meta de leads por busca', configPadrao.meta);
+        const incluirComSiteResposta = await perguntar(
+            rl,
+            '🌐 Incluir leads que possuem site? (y/n)',
+            configPadrao.incluir_com_site ? 'y' : 'n'
+        );
+        incluirComSite = ['y', 'yes', 's', 'sim'].includes(
+            incluirComSiteResposta.trim().toLowerCase()
+        );
+        assigned = await perguntar(
+            rl,
+            '👤 Responsável para o CRM',
+            configPadrao.assigned
+        );
         rl.close();
         console.log('');
     }
 
-    const locais = String(local || LOCAIS_PADRAO.join(';')).split(';').map(s => s.trim()).filter(Boolean);
+    const locais = String(local || configPadrao.local).split(';').map(s => s.trim()).filter(Boolean);
     const listaNichos = nichos && nichos !== true
         ? String(nichos).split(',').map(s => s.trim()).filter(Boolean)
-        : NICHOS_PADRAO;
+        : configPadrao.nichos;
 
     let raioKm = parseFloat(String(raio).replace(',', '.'));
-    if (!raioKm || raioKm <= 0) raioKm = RAIO_PADRAO_KM;
+    if (!raioKm || raioKm <= 0) raioKm = configPadrao.raio;
 
     let metaPorBusca = parseInt(meta, 10);
-    if (!metaPorBusca || metaPorBusca <= 0) metaPorBusca = META_PADRAO;
+    if (!metaPorBusca || metaPorBusca <= 0) metaPorBusca = configPadrao.meta;
 
     return {
         locais,
         nichos: listaNichos,
         raioKm,
         meta: metaPorBusca,
-        headless: !!args.headless
+        headless: args.headless === undefined ? configPadrao.headless : !!args.headless,
+        incluirComSite,
+        assigned
     };
 }
 
@@ -271,7 +691,7 @@ process.on('SIGINT', async () => {
     estado.encerrando = true;
     console.log(`\n${c.amarelo}⏹️  Interrompido pelo usuário.${c.reset}`);
     exibirResumo();
-    try { if (estado.browser) await estado.browser.close(); } catch (e) {}
+    await fecharNavegadorSeguro(estado.browser);
     process.exit(0);
 });
 
@@ -283,6 +703,7 @@ async function minerarLeads() {
 
     let todosLeads = carregarLeadsExistentes();
     estado.totalBase = todosLeads.length;
+    exportarParaCRM(todosLeads);
     // Set com os telefones já salvos para nunca duplicar contatos
     const telefonesSalvos = new Set(todosLeads.map(lead => lead.telefone));
 
@@ -327,6 +748,7 @@ async function minerarLeads() {
     const browser = await puppeteer.launch(launchOptions);
     estado.browser = browser;
     const page = await browser.newPage();
+    const paginaFallback = await browser.newPage();
 
     try {
         for (const local of locais) {
@@ -416,7 +838,8 @@ async function minerarLeads() {
                                 const nomeEl = document.querySelector('h1.DUwDvf');
                                 let nome = nomeEl ? nomeEl.innerText.trim() : null;
 
-                                let temSite = !!document.querySelector('a[data-item-id="authority"]');
+                                const siteEl = document.querySelector('a[data-item-id="authority"]');
+                                const site = siteEl ? siteEl.href : null;
 
                                 let telefone = null;
                                 const btnTelefone = document.querySelector('button[data-item-id^="phone:tel:"]');
@@ -432,7 +855,28 @@ async function minerarLeads() {
                                         .trim();
                                 }
 
-                                return { nome, temSite, telefone, endereco };
+                                const redesSociais = {};
+                                const redes = [
+                                    ['Instagram', /(^|\.)instagram\.com$/i],
+                                    ['Facebook', /(^|\.)facebook\.com$/i],
+                                    ['LinkedIn', /(^|\.)linkedin\.com$/i],
+                                    ['TikTok', /(^|\.)tiktok\.com$/i],
+                                    ['YouTube', /(^|\.)youtube\.com$/i]
+                                ];
+
+                                document.querySelectorAll('a[href]').forEach(link => {
+                                    try {
+                                        const url = new URL(link.href);
+                                        const rede = redes.find(([, dominio]) => dominio.test(url.hostname));
+                                        if (rede && !redesSociais[rede[0]]) {
+                                            redesSociais[rede[0]] = url.href;
+                                        }
+                                    } catch (e) {
+                                        // Ignora links que não sejam URLs válidas.
+                                    }
+                                });
+
+                                return { nome, site, telefone, endereco, redesSociais };
                             });
 
                             if (!dadosEmpresa.nome) {
@@ -440,7 +884,45 @@ async function minerarLeads() {
                                 continue;
                             }
 
-                            if (!dadosEmpresa.temSite && dadosEmpresa.telefone) {
+                            dadosEmpresa.temSite = Boolean(
+                                dadosEmpresa.site && !urlEstaNaBlacklist(dadosEmpresa.site)
+                            );
+                            if (!dadosEmpresa.temSite) {
+                                dadosEmpresa.site = null;
+                            }
+
+                            const cidadeDaEmpresa = extrairCidadeDoEndereco(dadosEmpresa.endereco) || local.nome;
+                            if (cidadeDaEmpresa !== local.nome) {
+                                console.log(
+                                    `${c.ciano}📍 Localidade atualizada pelo endereço: ${cidadeDaEmpresa}${c.reset}`
+                                );
+                            }
+
+                            const dadosFaltantes = await buscarDadosFaltantes({
+                                nome: dadosEmpresa.nome,
+                                cidade: cidadeDaEmpresa,
+                                telefone: dadosEmpresa.telefone,
+                                site: dadosEmpresa.site,
+                                redes_sociais: dadosEmpresa.redesSociais
+                            }, paginaFallback);
+                            dadosEmpresa.site = dadosFaltantes.site;
+                            dadosEmpresa.redesSociais = dadosFaltantes.redes_sociais;
+                            const possuiSite = dadosEmpresa.temSite || Boolean(dadosEmpresa.site);
+                            let siteAprovadoManualmente = false;
+
+                            if (possuiSite && config.incluirComSite) {
+                                siteAprovadoManualmente = await confirmarSite(
+                                    { nome: dadosEmpresa.nome },
+                                    dadosEmpresa.site
+                                );
+                            } else if (dadosEmpresa.site && !dadosEmpresa.temSite && !dadosFaltantes.siteValidado) {
+                                siteAprovadoManualmente = await confirmarSite(
+                                    { nome: dadosEmpresa.nome },
+                                    dadosEmpresa.site
+                                );
+                            }
+
+                            if ((!possuiSite || siteAprovadoManualmente) && dadosEmpresa.telefone) {
                                 const telefoneFormatado = formatarTelefone(dadosEmpresa.telefone);
 
                                 if (telefonesSalvos.has(telefoneFormatado)) {
@@ -450,14 +932,24 @@ async function minerarLeads() {
                                         nome: dadosEmpresa.nome,
                                         telefone: telefoneFormatado,
                                         endereco: dadosEmpresa.endereco,
+                                        site: dadosEmpresa.site,
                                         nicho: nicho,
-                                        cidade: local.nome,
+                                        cidade: cidadeDaEmpresa,
                                         distancia_km: distancia !== null ? Number(distancia.toFixed(1)) : null,
+                                        redes_sociais: dadosEmpresa.redesSociais,
+                                        observacoes: dadosEmpresa.temSite
+                                            ? 'Possui site próprio.'
+                                            : dadosFaltantes.siteValidado
+                                                ? 'Possui site próprio validado pelo fallback.'
+                                                : dadosEmpresa.site
+                                                    ? `Site candidato aprovado manualmente: ${dadosEmpresa.site}`
+                                                    : 'Não possui site próprio identificado.',
                                         status: 'pendente'
                                     };
 
                                     salvarNovoLead(novoLead, todosLeads);
                                     estado.novos.push(novoLead);
+                                    exportarParaCRM(todosLeads, config.assigned, estado.novos);
                                     estado.totalBase = todosLeads.length;
                                     telefonesSalvos.add(telefoneFormatado);
                                     leadsNestaBusca++;
@@ -468,8 +960,12 @@ async function minerarLeads() {
                                         console.log(`${c.cinza}   📍 ${novoLead.endereco}${c.reset}`);
                                     }
                                 }
-                            } else if (dadosEmpresa.temSite) {
-                                console.log(`${c.vermelho}❌ Ignorado (possui site): ${dadosEmpresa.nome}${c.reset}`);
+                            } else if (possuiSite && !siteAprovadoManualmente) {
+                                const tipoSite = dadosFaltantes.siteValidado
+                                    ? 'confirmado'
+                                    : 'candidato para verificação manual';
+                                console.log(`${c.vermelho}❌ Ignorado (${tipoSite}): ${dadosEmpresa.nome}${c.reset}`);
+                                console.log(`${c.cinza}   🌐 ${dadosEmpresa.site}${c.reset}`);
                             } else {
                                 console.log(`${c.vermelho}❌ Ignorado (sem telefone): ${dadosEmpresa.nome}${c.reset}`);
                             }
@@ -487,7 +983,9 @@ async function minerarLeads() {
             }
         }
     } finally {
-        await browser.close();
+        await fecharPaginaSegura(paginaFallback);
+        await fecharPaginaSegura(page);
+        await fecharNavegadorSeguro(browser);
         estado.browser = null;
     }
 
@@ -495,7 +993,15 @@ async function minerarLeads() {
     exibirResumo();
 }
 
-minerarLeads().catch(err => {
-    console.error(`${c.vermelho}Erro fatal:${c.reset}`, err);
-    process.exit(1);
-});
+if (require.main === module) {
+    minerarLeads().catch(err => {
+        console.error(`${c.vermelho}Erro fatal:${c.reset}`, err);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    buscarDadosFaltantes,
+    siteFoiValidado,
+    extrairCidadeDoEndereco
+};
