@@ -6,12 +6,13 @@ Script em Node.js + Puppeteer que automatiza buscas no Google Maps e coleta **em
 
 1. Você informa uma **localização** (cidade, endereço ou coordenadas) e um **raio** em km.
 2. O script converte o local em coordenadas (via OpenStreetMap/Nominatim) e abre o Google Maps centralizado ali, com zoom ajustado ao raio.
-3. Para cada nicho, percorre os cards de resultados, rolando a lista para carregar mais.
-4. A distância de cada empresa até o centro é calculada, e as que ficam **fora do raio são descartadas**.
-5. Salva apenas empresas **sem site** e **com telefone**, ignorando duplicatas.
-6. Cada lead aparece no terminal assim que é capturado e é gravado imediatamente no `leads.json` e no `leads_prontos_crm.csv`.
-7. Opcionalmente, também busca e apresenta leads que possuem site para confirmação manual (`y/n`).
-8. Ao final (ou com Ctrl+C), exibe uma tabela com os leads novos e a contagem por nicho.
+3. Para cada local e nicho, consulta até sete centros distribuídos pelo raio (o centro informado e seis pontos ao redor), para explorar listas que o Maps ordenaria de forma diferente em cada região.
+4. Em cada centro, percorre os cards de resultados, rolando a lista para carregar mais. A deduplicação por telefone evita salvar novamente um comércio encontrado por mais de um ponto.
+5. A distância de cada empresa até o centro original é calculada, e as que ficam **fora do raio são descartadas**.
+6. Salva apenas empresas **sem site** e **com telefone**, ignorando duplicatas.
+7. Cada lead aparece no terminal assim que é capturado e é gravado imediatamente no `leads.json` e no `leads_prontos_crm.csv`.
+8. Opcionalmente, também busca e apresenta leads que possuem site para confirmação manual (`y/n`).
+9. Ao final (ou com Ctrl+C), exibe uma tabela com os leads novos e a contagem por nicho.
 
 ## Requisitos
 
@@ -56,6 +57,7 @@ Esses valores são carregados de [`config.json`](./config.json), que pode ser ed
 node minerar_leads.js --local "Pouso Alegre, MG" --raio 30
 node minerar_leads.js --local "Itajuba, MG; Varginha, MG" --raio 15 --nichos "Pizzaria, Pet Shop" --meta 20
 node minerar_leads.js --local "-22.4256,-45.4528" --raio 10 --headless
+node minerar_leads.js --pontos 4
 node minerar_leads.js --incluir-com-site
 node minerar_leads.js --assigned "Nome do responsável"
 ```
@@ -65,7 +67,8 @@ node minerar_leads.js --assigned "Nome do responsável"
 | `--local` | Cidade, endereço ou `lat,lng`. Vários locais separados por `;` | `Itajuba, MG` |
 | `--raio` | Raio de atuação em km a partir de cada local | `20` |
 | `--nichos` | Segmentos separados por vírgula | lista no topo do script |
-| `--meta` | Leads válidos por combinação nicho + local | `15` |
+| `--meta` | Leads válidos por combinação nicho + ponto de busca | `15` |
+| `--pontos` | Centros distribuídos pelo raio: 1 (só o centro) até 7 (centro + seis ao redor) | `7` |
 | `--headless` | Executa sem abrir a janela do navegador | desligado |
 | `--incluir-com-site` | Inclui leads com site e pede confirmação antes de salvar | desligado |
 | `--assigned` | Responsável exportado no CSV do CRM nesta execução | valor do `config.json` |
@@ -82,6 +85,7 @@ Exemplo de configuração:
   "raio": 20,
   "nichos": ["Pizzaria", "Pet Shop"],
   "meta": 15,
+  "pontos_busca": 7,
   "headless": false,
   "incluir_com_site": false,
   "assigned": "Nome do responsável"
@@ -157,6 +161,7 @@ Se o arquivo já existir, o script o carrega e **não duplica** telefones já sa
 - **Navegador não abre:** defina `CHROME_PATH` com o caminho do executável.
 - **Nenhum lead capturado:** o Google Maps muda seus seletores CSS com frequência. Se isso acontecer, revise `h1.DUwDvf`, `a[data-item-id="authority"]` e `button[data-item-id^="phone:tel:"]`.
 - **Poucos resultados com raio pequeno:** o Maps limita quantos resultados mostra por busca. Aumente o raio ou use mais nichos.
+- **Cobertura espacial:** `pontos_busca` (ou `--pontos`) altera o número de centros consultados. O padrão 7 inclui o centro e seis pontos a 55% do raio ao redor; diminua para reduzir o tempo. A meta é aplicada por combinação de nicho e centro.
 - **Emojis quebrados no terminal do Windows:** use o Windows Terminal ou rode `chcp 65001` antes do script.
 - **Busca travando:** aumente os valores de `sleep()` em conexões lentas.
 

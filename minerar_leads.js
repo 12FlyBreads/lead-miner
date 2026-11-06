@@ -62,7 +62,8 @@ Opções:
   --raio      Raio de atuação em km a partir do local (padrão: ${config.raio})
   --nichos    Segmentos separados por vírgula
               Ex.: --nichos "Pizzaria, Pet Shop, Academia"
-  --meta      Leads válidos por combinação nicho + local (padrão: ${config.meta})
+  --meta      Leads válidos por combinação nicho + ponto (padrão: ${config.meta})
+  --pontos    Centros de busca por local, de 1 a 7 (padrão: ${config.pontos_busca || 7})
   --headless  Executa sem abrir a janela do navegador
   --incluir-com-site
               Inclui leads com site e pede confirmação (y/n) antes de salvar
@@ -125,6 +126,10 @@ function carregarConfiguracao() {
         }
         if (!Number.isInteger(Number(configuracao.meta)) || Number(configuracao.meta) <= 0) {
             throw new Error('o campo "meta" precisa ser um número inteiro maior que zero');
+        }
+        if (configuracao.pontos_busca !== undefined &&
+            (!Number.isInteger(Number(configuracao.pontos_busca)) || Number(configuracao.pontos_busca) < 1 || Number(configuracao.pontos_busca) > 7)) {
+            throw new Error('o campo "pontos_busca" precisa ser um número inteiro entre 1 e 7');
         }
         if (typeof configuracao.headless !== 'boolean') {
             throw new Error('o campo "headless" precisa ser true ou false');
@@ -556,6 +561,7 @@ async function obterConfig() {
     let raio = args.raio ?? configPadrao.raio;
     let nichos = args.nichos ?? configPadrao.nichos.join(', ');
     let meta = args.meta ?? configPadrao.meta;
+    let pontosBusca = args.pontos ?? configPadrao.pontos_busca ?? 7;
     let incluirComSite = args['incluir-com-site'] === undefined
         ? configPadrao.incluir_com_site
         : true;
@@ -572,6 +578,7 @@ async function obterConfig() {
         raio = await perguntar(rl, '📏 Raio de atuação em km', configPadrao.raio);
         nichos = await perguntar(rl, '🏷️  Nichos (separados por vírgula)', configPadrao.nichos.join(', '));
         meta = await perguntar(rl, '🎯 Meta de leads por busca', configPadrao.meta);
+        pontosBusca = await perguntar(rl, '🧭 Centros de busca por local (1 a 7)', configPadrao.pontos_busca ?? 7);
         const incluirComSiteResposta = await perguntar(
             rl,
             '🌐 Incluir leads que possuem site? (y/n)',
@@ -599,12 +606,17 @@ async function obterConfig() {
 
     let metaPorBusca = parseInt(meta, 10);
     if (!metaPorBusca || metaPorBusca <= 0) metaPorBusca = configPadrao.meta;
+    let quantidadePontos = parseInt(pontosBusca, 10);
+    if (!Number.isInteger(quantidadePontos) || quantidadePontos < 1 || quantidadePontos > 7) {
+        quantidadePontos = configPadrao.pontos_busca ?? 7;
+    }
 
     return {
         locais,
         nichos: listaNichos,
         raioKm,
         meta: metaPorBusca,
+        pontosBusca: quantidadePontos,
         headless: args.headless === undefined ? configPadrao.headless : !!args.headless,
         incluirComSite,
         assigned
@@ -638,6 +650,21 @@ function distanciaKm(a, b) {
     const h = Math.sin(dLat / 2) ** 2 +
         Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Centro + seis pontos ao redor, para variar a ordenação local de resultados do Maps.
+function gerarPontosBusca(local, raioKm, quantidade) {
+    const pontos = [{ ...local, indice: 1 }];
+    if (quantidade <= 1 || raioKm <= 0) return pontos;
+    const deslocamentoKm = raioKm * 0.55;
+    for (let i = 0; i < 6 && pontos.length < quantidade; i++) {
+        const angulo = i * Math.PI / 3;
+        const lat = local.lat + (deslocamentoKm * Math.cos(angulo)) / 111.32;
+        const lng = local.lng + (deslocamentoKm * Math.sin(angulo)) /
+            (111.32 * Math.cos(local.lat * Math.PI / 180));
+        pontos.push({ nome: `${local.nome} - ponto ${pontos.length + 1}`, lat, lng, indice: pontos.length + 1 });
+    }
+    return pontos;
 }
 
 // Converte o raio em um nível de zoom do Google Maps (aproximado)
@@ -709,6 +736,7 @@ async function minerarLeads() {
 
     console.log(`📂 Leads já cadastrados na base: ${todosLeads.length}`);
     console.log(`📏 Raio de atuação: ${config.raioKm} km`);
+    console.log(`🧭 Centros de busca por local: ${config.pontosBusca}`);
     console.log(`🏷️  Nichos: ${config.nichos.length} | 🎯 Meta por busca: ${config.meta}\n`);
 
     // Localiza as coordenadas de cada ponto de busca
@@ -753,14 +781,16 @@ async function minerarLeads() {
     try {
         for (const local of locais) {
             const centro = { lat: local.lat, lng: local.lng };
-            const zoom = zoomParaRaio(config.raioKm, local.lat);
+            const pontosBusca = gerarPontosBusca(local, config.raioKm, config.pontosBusca);
 
             for (const nicho of config.nichos) {
+              for (const ponto of pontosBusca) {
+                const zoom = zoomParaRaio(config.raioKm, ponto.lat);
                 console.log(`\n${c.ciano}${'='.repeat(60)}${c.reset}`);
-                console.log(`${c.ciano}🔎 "${nicho}" num raio de ${config.raioKm} km de ${local.nome}${c.reset}`);
+                console.log(`${c.ciano}🔎 "${nicho}" | ponto ${ponto.indice}/${pontosBusca.length} de ${local.nome} (raio final ${config.raioKm} km)${c.reset}`);
                 console.log(`${c.ciano}${'='.repeat(60)}${c.reset}`);
 
-                const urlBusca = `https://www.google.com.br/maps/search/${encodeURIComponent(nicho)}/@${local.lat},${local.lng},${zoom}z?hl=pt-BR`;
+                const urlBusca = `https://www.google.com.br/maps/search/${encodeURIComponent(nicho)}/@${ponto.lat},${ponto.lng},${zoom}z?hl=pt-BR`;
 
                 try {
                     await page.goto(urlBusca, { waitUntil: 'networkidle2', timeout: 60000 });
@@ -980,6 +1010,7 @@ async function minerarLeads() {
                 } catch (erroNavegacao) {
                     console.log(`${c.vermelho}❌ Erro ao carregar a busca "${nicho}", pulando para a próxima...${c.reset}`);
                 }
+              }
             }
         }
     } finally {
