@@ -62,7 +62,7 @@ Opções:
   --raio      Raio de atuação em km a partir do local (padrão: ${config.raio})
   --nichos    Segmentos separados por vírgula
               Ex.: --nichos "Pizzaria, Pet Shop, Academia"
-  --meta      Leads válidos por combinação nicho + ponto (padrão: ${config.meta})
+  --meta      Leads válidos por nicho e local (padrão: ${config.meta})
   --pontos    Centros de busca por local, de 1 a 7 (padrão: ${config.pontos_busca || 7})
   --headless  Executa sem abrir a janela do navegador
   --incluir-com-site
@@ -283,36 +283,113 @@ function extrairRedeSocial(url) {
     return null;
 }
 
-function siteFoiValidado(textoSite, lead) {
-    const textoNormalizado = normalizarTexto(textoSite);
-    const telefoneLead = normalizarTelefoneParaValidacao(lead.telefone);
+function redePertenceAoLead(url, textoResultado, lead) {
+    return pontuarRedeSocial(url, textoResultado, lead) > 0;
+}
 
-    if (telefoneLead && normalizarTelefoneParaValidacao(textoSite).includes(telefoneLead)) {
-        return true;
+function pontuarRedeSocial(url, textoResultado, lead) {
+    let caminhoUrl = '';
+    try {
+        caminhoUrl = new URL(url).pathname;
+    } catch (erro) {
+        return 0;
     }
 
-    const cidade = normalizarTexto(lead.cidade).trim();
-    const palavrasNome = extrairPalavrasPrincipais(lead.nome);
-    return Boolean(
-        cidade &&
-        textoNormalizado.includes(cidade) &&
-        palavrasNome.some(palavra => textoNormalizado.includes(palavra))
+    const palavrasNome = extrairPalavrasPrincipais(lead.nome)
+        .filter(palavra => palavra.length >= 4);
+    const palavrasNicho = extrairPalavrasPrincipais(lead.nicho)
+        .filter(palavra => palavra.length >= 4);
+    const palavrasLocalizacao = extrairPalavrasPrincipais(lead.cidade)
+        .filter(palavra => palavra.length >= 4);
+    const palavrasContexto = new Set([...palavrasNicho, ...palavrasLocalizacao]);
+    const palavrasSignificativas = palavrasNome.filter(palavra => !palavrasContexto.has(palavra));
+    if (!palavrasSignificativas.length || (!palavrasNicho.length && !palavrasLocalizacao.length)) return 0;
+
+    const textoUrl = normalizarTexto(caminhoUrl);
+    const textoUrlCompacto = textoUrl.replace(/[^a-z0-9]/g, '');
+    const textoTitulo = normalizarTexto(textoResultado);
+    const textoPerfil = `${textoUrl} ${textoTitulo}`;
+    const palavrasNaUrl = palavrasSignificativas.filter(palavra =>
+        textoUrl.includes(palavra) || textoUrlCompacto.includes(palavra.replace(/[^a-z0-9]/g, ''))
     );
+    const palavrasNoTitulo = palavrasSignificativas.filter(palavra => textoTitulo.includes(palavra));
+    const palavrasNichoEncontradas = palavrasNicho.filter(palavra => textoPerfil.includes(palavra));
+    const palavrasLocalizacaoEncontradas = palavrasLocalizacao.filter(palavra =>
+        textoPerfil.includes(palavra)
+    );
+    const palavraNomeEncontrada = palavrasNaUrl.length > 0 || palavrasNoTitulo.length > 0;
+    const palavraContextoEncontrada =
+        palavrasNichoEncontradas.length > 0 || palavrasLocalizacaoEncontradas.length > 0;
+
+    if (!palavraNomeEncontrada || !palavraContextoEncontrada) return 0;
+
+    return (palavrasNaUrl.length * 5) + (palavrasNoTitulo.length * 2) +
+        (palavrasNichoEncontradas.length * 3) +
+        (palavrasLocalizacaoEncontradas.length * 2);
+}
+
+function filtrarRedesSociaisDoLead(redesSociais, lead) {
+    if (!redesSociais || typeof redesSociais !== 'object' || !lead) {
+        return {};
+    }
+
+    return Object.entries(redesSociais).reduce((redesValidas, [rede, url]) => {
+        if (
+            (rede === 'Instagram' || rede === 'Facebook') &&
+            typeof url === 'string' &&
+            redePertenceAoLead(url, '', lead)
+        ) {
+            redesValidas[rede] = url;
+        }
+        return redesValidas;
+    }, {});
+}
+
+function siteFoiValidado(textoSite, lead) {
+    return avaliarSiteCandidato(textoSite, lead).confirmado;
+}
+
+function avaliarSiteCandidato(textoSite, lead) {
+    const textoNormalizado = normalizarTexto(textoSite);
+    const telefoneLead = normalizarTelefoneParaValidacao(lead.telefone);
+    const telefoneEncontrado = Boolean(
+        telefoneLead && normalizarTelefoneParaValidacao(textoSite).includes(telefoneLead)
+    );
+    const cidade = normalizarTexto(lead.cidade).trim();
+    const cidadeEncontrada = Boolean(cidade && textoNormalizado.includes(cidade));
+    const palavrasNomeEncontradas = extrairPalavrasPrincipais(lead.nome)
+        .filter(palavra => textoNormalizado.includes(palavra));
+
+    return {
+        confirmado: telefoneEncontrado || (cidadeEncontrada && palavrasNomeEncontradas.length > 0),
+        telefoneEncontrado,
+        cidadeEncontrada,
+        palavrasNomeEncontradas
+    };
 }
 
 async function buscarDadosFaltantes(lead, paginaPuppeteer) {
     const siteExistente = lead && typeof lead.site === 'string' && lead.site.trim()
         ? lead.site.trim()
         : null;
-    const redesExistentes = lead && lead.redes_sociais && typeof lead.redes_sociais === 'object'
-        ? { ...lead.redes_sociais }
+    const redesExistentes = lead?.redes_sociais && typeof lead.redes_sociais === 'object'
+        ? Object.entries(lead.redes_sociais).reduce((redesValidas, [rede, url]) => {
+            if (
+                (rede === 'Instagram' || rede === 'Facebook') &&
+                typeof url === 'string' &&
+                url.trim()
+            ) {
+                redesValidas[rede] = url;
+            }
+            return redesValidas;
+        }, {})
         : {};
     const precisaBuscarSite = !siteExistente;
     const precisaBuscarRedes = !redesExistentes.Instagram || !redesExistentes.Facebook;
 
     if (!lead || (!precisaBuscarSite && !precisaBuscarRedes)) {
         if (lead && !precisaBuscarSite && !precisaBuscarRedes) {
-            console.log(`${c.cinza}ℹ️ Fallback não necessário para "${lead.nome}": site e redes já cadastrados.${c.reset}`);
+            console.log(`${c.cinza}ℹ️ Fallback não realizado para "${lead.nome}": site e redes sociais já cadastrados.${c.reset}`);
         }
         return {
             site: siteExistente,
@@ -326,36 +403,78 @@ async function buscarDadosFaltantes(lead, paginaPuppeteer) {
         return { site: null, siteValidado: false, redes_sociais: redesExistentes };
     }
 
+    if (precisaBuscarSite) {
+        console.log(`${c.ciano}🔄 Fallback iniciado para "${lead.nome}": buscando site e redes sociais faltantes.${c.reset}`);
+    } else {
+        console.log(`${c.ciano}🔄 Fallback iniciado para "${lead.nome}": buscando apenas redes sociais faltantes.${c.reset}`);
+        console.log(`${c.cinza}   🌐 Busca de site não realizada: o Google Maps já informou um site.${c.reset}`);
+    }
+
     let candidatosSite = [];
+    let primeiraEvidenciaSite = null;
+    const candidatosRedes = {};
     try {
-        const consulta = `"${lead.nome} ${lead.cidade}"`;
-        const urlBusca = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(consulta)}`;
-        await paginaPuppeteer.goto(urlBusca, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        const consultas = [
+            `${lead.nome} ${lead.cidade}`,
+            `${lead.nome} Instagram`,
+            `${lead.nome} Facebook`
+        ];
+        for (const consulta of consultas) {
+            const urlBusca = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(consulta)}`;
+            await paginaPuppeteer.goto(urlBusca, { waitUntil: 'domcontentloaded', timeout: 10000 });
 
-        const resultados = await paginaPuppeteer.evaluate(() => Array.from(
-            document.querySelectorAll('a[data-testid="result-title-a"], a.result__a')
-        ).map(link => ({
-            href: link.href,
-            texto: link.innerText || ''
-        })));
-        if (!resultados.length) {
-            const tipoBusca = precisaBuscarSite ? 'site ou redes sociais' : 'redes sociais';
-            console.log(`${c.amarelo}⚠️ Busca de ${tipoBusca} sem resultados para "${lead.nome}".${c.reset}`);
+            const resultados = await paginaPuppeteer.evaluate(() => Array.from(
+                document.querySelectorAll('a[data-testid="result-title-a"], a.result__a')
+            ).map(link => ({
+                href: link.href,
+                texto: link.innerText || ''
+            })));
+            for (const resultado of resultados) {
+                const url = obterUrlResultado(resultado.href);
+                if (!url) continue;
+
+                const rede = extrairRedeSocial(url);
+                if (rede && !redesExistentes[rede[0]]) {
+                    const pontuacao = pontuarRedeSocial(url, resultado.texto, lead);
+                    if (pontuacao > 0) {
+                        const candidatosDaRede = candidatosRedes[rede[0]] || [];
+                        if (!candidatosDaRede.some(candidato => candidato.url === rede[1])) {
+                            candidatosDaRede.push({
+                                url: rede[1],
+                                pontuacao,
+                                textoResultado: resultado.texto
+                            });
+                            candidatosRedes[rede[0]] = candidatosDaRede;
+                        }
+                    }
+                }
+
+                if (precisaBuscarSite && !urlEstaNaBlacklist(url) && !candidatosSite.includes(url)) {
+                    candidatosSite.push(url);
+                }
+            }
         }
 
-        for (const resultado of resultados) {
-            const url = obterUrlResultado(resultado.href);
-            if (!url) continue;
-
-            const rede = extrairRedeSocial(url);
-            if (rede && !redesExistentes[rede[0]]) {
-                redesExistentes[rede[0]] = rede[1];
-            }
-
-            if (precisaBuscarSite && !urlEstaNaBlacklist(url) && !candidatosSite.includes(url)) {
-                candidatosSite.push(url);
+        for (const [rede, candidatosDaRede] of Object.entries(candidatosRedes)) {
+            candidatosDaRede.sort((a, b) => b.pontuacao - a.pontuacao);
+            if (candidatosDaRede[0]) {
+                redesExistentes[rede] = candidatosDaRede[0].url;
             }
         }
+
+        const redesEncontradas = Object.keys(redesExistentes);
+        const resumoRedes = redesEncontradas.length
+            ? redesEncontradas.join(', ')
+            : 'nenhuma rede social válida';
+        const resumoSite = precisaBuscarSite
+            ? candidatosSite.length
+                ? `${candidatosSite.length} candidato(s) encontrado(s)`
+                : 'nenhum candidato encontrado'
+            : 'não realizado (site já informado pelo Google Maps)';
+        console.log(
+            `${c.cinza}🔎 Busca complementar concluída para "${lead.nome}": ` +
+            `site: ${resumoSite}; redes sociais: ${resumoRedes}.${c.reset}`
+        );
 
         if (!precisaBuscarSite) {
             return {
@@ -373,12 +492,15 @@ async function buscarDadosFaltantes(lead, paginaPuppeteer) {
                     timeout: 10000
                 });
                 const textoSite = await paginaPuppeteer.evaluate(() => document.body?.innerText || '');
-                if (siteFoiValidado(textoSite, lead)) {
-                    const siteValidado = paginaPuppeteer.url();
-                    console.log(`${c.verde}✅ Site confirmado por telefone ou cidade/nome: ${siteValidado}${c.reset}`);
+                const evidencias = avaliarSiteCandidato(textoSite, lead);
+                if (!primeiraEvidenciaSite) primeiraEvidenciaSite = evidencias;
+                if (evidencias.confirmado) {
+                    const siteCandidatoValidado = paginaPuppeteer.url();
+                    console.log(`${c.verde}✅ Site candidato compatível com telefone ou cidade/nome; aguardando confirmação manual: ${siteCandidatoValidado}${c.reset}`);
                     return {
-                        site: siteValidado,
-                        siteValidado: true,
+                        site: siteCandidatoValidado,
+                        siteValidado: false,
+                        evidencias,
                         redes_sociais: redesExistentes
                     };
                 }
@@ -413,14 +535,26 @@ async function buscarDadosFaltantes(lead, paginaPuppeteer) {
     return {
         site: siteCandidato,
         siteValidado: false,
+        evidencias: primeiraEvidenciaSite,
         redes_sociais: redesExistentes
     };
 }
 
-async function confirmarSite(lead, site) {
+async function confirmarSite(lead, site, evidencias) {
     console.log(`\n${c.amarelo}${'─'.repeat(70)}${c.reset}`);
     console.log(`${c.amarelo}🌐 Site encontrado para verificação manual${c.reset}`);
     console.log(`${c.negrito}${site}${c.reset}`);
+    if (evidencias) {
+        const correspondencias = [];
+        if (evidencias.telefoneEncontrado) correspondencias.push('telefone');
+        if (evidencias.cidadeEncontrada) correspondencias.push('cidade');
+        if (evidencias.palavrasNomeEncontradas.length) {
+            correspondencias.push(`nome (${evidencias.palavrasNomeEncontradas.join(', ')})`);
+        }
+        console.log(`${c.cinza}🔎 Informações encontradas no site: ${correspondencias.length
+            ? correspondencias.join(' | ')
+            : 'nenhuma correspondência'}${c.reset}`);
+    }
     console.log(`${c.amarelo}${'─'.repeat(70)}${c.reset}`);
 
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -489,9 +623,8 @@ function exportarParaCRM(leads, assigned, leadsDaRonda = []) {
             lead.site && `Site: ${lead.site}`,
             lead.nicho && `Nicho: ${lead.nicho}`,
             lead.cidade && `Cidade: ${lead.cidade}`,
-            lead.redes_sociais && Object.entries(lead.redes_sociais)
-                .map(([rede, url]) => `${rede}: ${url}`)
-                .join(' | '),
+            `Possível Instagram: ${lead.redes_sociais?.Instagram || 'rede social não encontrada'}`,
+            `Possível Facebook: ${lead.redes_sociais?.Facebook || 'rede social não encontrada'}`,
             `Observações: ${observacoesSite}`
         ].filter(Boolean).join('\n');
 
@@ -777,6 +910,8 @@ async function minerarLeads() {
     estado.browser = browser;
     const page = await browser.newPage();
     const paginaFallback = await browser.newPage();
+    await page.setCacheEnabled(false);
+    await paginaFallback.setCacheEnabled(false);
 
     try {
         for (const local of locais) {
@@ -784,7 +919,11 @@ async function minerarLeads() {
             const pontosBusca = gerarPontosBusca(local, config.raioKm, config.pontosBusca);
 
             for (const nicho of config.nichos) {
+              let leadsNesteNicho = 0;
+
               for (const ponto of pontosBusca) {
+                if (leadsNesteNicho >= config.meta) break;
+
                 const zoom = zoomParaRaio(config.raioKm, ponto.lat);
                 console.log(`\n${c.ciano}${'='.repeat(60)}${c.reset}`);
                 console.log(`${c.ciano}🔎 "${nicho}" | ponto ${ponto.indice}/${pontosBusca.length} de ${local.nome} (raio final ${config.raioKm} km)${c.reset}`);
@@ -796,12 +935,11 @@ async function minerarLeads() {
                     await page.goto(urlBusca, { waitUntil: 'networkidle2', timeout: 60000 });
                     await sleep(4000);
 
-                    let leadsNestaBusca = 0;
                     let indexAtual = 0;
                     let tentativasSemNovosCards = 0;
                     let foraDoRaioSeguidos = 0;
 
-                    while (leadsNestaBusca < config.meta) {
+                    while (leadsNesteNicho < config.meta) {
                         let cards = await page.$$('a[href*="/maps/place/"]');
 
                         if (indexAtual >= cards.length) {
@@ -914,9 +1052,16 @@ async function minerarLeads() {
                                 continue;
                             }
 
-                            dadosEmpresa.temSite = Boolean(
-                                dadosEmpresa.site && !urlEstaNaBlacklist(dadosEmpresa.site)
-                            );
+                            if (dadosEmpresa.telefone) {
+                                const telefoneFormatado = formatarTelefone(dadosEmpresa.telefone);
+                                if (telefonesSalvos.has(telefoneFormatado)) {
+                                    console.log(`${c.amarelo}⏭️ Duplicado (já na lista): ${dadosEmpresa.nome}. Fallback não realizado.${c.reset}`);
+                                    indexAtual++;
+                                    continue;
+                                }
+                            }
+
+                            dadosEmpresa.temSite = Boolean(dadosEmpresa.site);
                             if (!dadosEmpresa.temSite) {
                                 dadosEmpresa.site = null;
                             }
@@ -928,41 +1073,51 @@ async function minerarLeads() {
                                 );
                             }
 
-                            const dadosFaltantes = await buscarDadosFaltantes({
-                                nome: dadosEmpresa.nome,
-                                cidade: cidadeDaEmpresa,
-                                telefone: dadosEmpresa.telefone,
-                                site: dadosEmpresa.site,
-                                redes_sociais: dadosEmpresa.redesSociais
-                            }, paginaFallback);
+                            const dadosFaltantes = dadosEmpresa.temSite
+                                ? {
+                                    site: dadosEmpresa.site,
+                                    siteValidado: true,
+                                    redes_sociais: dadosEmpresa.redesSociais
+                                }
+                                : await buscarDadosFaltantes({
+                                    nome: dadosEmpresa.nome,
+                                    cidade: cidadeDaEmpresa,
+                                    endereco: dadosEmpresa.endereco,
+                                    nicho,
+                                    telefone: dadosEmpresa.telefone,
+                                    site: null,
+                                    redes_sociais: dadosEmpresa.redesSociais
+                                }, paginaFallback);
+                            if (dadosEmpresa.temSite) {
+                                console.log(`${c.cinza}ℹ️ Fallback não realizado para "${dadosEmpresa.nome}": site informado pelo Google Maps.${c.reset}`);
+                            }
                             dadosEmpresa.site = dadosFaltantes.site;
                             dadosEmpresa.redesSociais = dadosFaltantes.redes_sociais;
                             const possuiSite = dadosEmpresa.temSite || Boolean(dadosEmpresa.site);
-                            let siteAprovadoManualmente = false;
+                            let siteAprovado = dadosEmpresa.temSite && config.incluirComSite;
 
-                            if (possuiSite && config.incluirComSite) {
-                                siteAprovadoManualmente = await confirmarSite(
+                            if (dadosEmpresa.site && !dadosEmpresa.temSite) {
+                                siteAprovado = await confirmarSite(
                                     { nome: dadosEmpresa.nome },
-                                    dadosEmpresa.site
-                                );
-                            } else if (dadosEmpresa.site && !dadosEmpresa.temSite && !dadosFaltantes.siteValidado) {
-                                siteAprovadoManualmente = await confirmarSite(
-                                    { nome: dadosEmpresa.nome },
-                                    dadosEmpresa.site
+                                    dadosEmpresa.site,
+                                    dadosFaltantes.evidencias
                                 );
                             }
 
-                            if ((!possuiSite || siteAprovadoManualmente) && dadosEmpresa.telefone) {
+                            if ((!possuiSite || siteAprovado) && dadosEmpresa.telefone) {
                                 const telefoneFormatado = formatarTelefone(dadosEmpresa.telefone);
 
                                 if (telefonesSalvos.has(telefoneFormatado)) {
                                     console.log(`${c.amarelo}⏭️ Duplicado (já na lista): ${dadosEmpresa.nome}${c.reset}`);
                                 } else {
+                                    const siteParaSalvar = dadosEmpresa.temSite
+                                        ? dadosEmpresa.site
+                                        : null;
                                     const novoLead = {
                                         nome: dadosEmpresa.nome,
                                         telefone: telefoneFormatado,
                                         endereco: dadosEmpresa.endereco,
-                                        site: dadosEmpresa.site,
+                                        site: siteParaSalvar,
                                         nicho: nicho,
                                         cidade: cidadeDaEmpresa,
                                         distancia_km: distancia !== null ? Number(distancia.toFixed(1)) : null,
@@ -971,9 +1126,7 @@ async function minerarLeads() {
                                             ? 'Possui site próprio.'
                                             : dadosFaltantes.siteValidado
                                                 ? 'Possui site próprio validado pelo fallback.'
-                                                : dadosEmpresa.site
-                                                    ? `Site candidato aprovado manualmente: ${dadosEmpresa.site}`
-                                                    : 'Não possui site próprio identificado.',
+                                                : 'Não possui site próprio identificado.',
                                         status: 'pendente'
                                     };
 
@@ -982,15 +1135,15 @@ async function minerarLeads() {
                                     exportarParaCRM(todosLeads, config.assigned, estado.novos);
                                     estado.totalBase = todosLeads.length;
                                     telefonesSalvos.add(telefoneFormatado);
-                                    leadsNestaBusca++;
+                                    leadsNesteNicho++;
 
                                     const distTxt = novoLead.distancia_km !== null ? ` | ${novoLead.distancia_km} km` : '';
-                                    console.log(`${c.verde}✅ [${leadsNestaBusca}/${config.meta}] ${c.negrito}${novoLead.nome}${c.reset}${c.verde} | ${novoLead.telefone}${distTxt}${c.reset}`);
+                                    console.log(`${c.verde}✅ [${leadsNesteNicho}/${config.meta}] ${c.negrito}${novoLead.nome}${c.reset}${c.verde} | ${novoLead.telefone}${distTxt}${c.reset}`);
                                     if (novoLead.endereco) {
                                         console.log(`${c.cinza}   📍 ${novoLead.endereco}${c.reset}`);
                                     }
                                 }
-                            } else if (possuiSite && !siteAprovadoManualmente) {
+                            } else if (possuiSite && !siteAprovado) {
                                 const tipoSite = dadosFaltantes.siteValidado
                                     ? 'confirmado'
                                     : 'candidato para verificação manual';
@@ -1033,6 +1186,8 @@ if (require.main === module) {
 
 module.exports = {
     buscarDadosFaltantes,
+    filtrarRedesSociaisDoLead,
+    redePertenceAoLead,
     siteFoiValidado,
     extrairCidadeDoEndereco
 };

@@ -14,6 +14,10 @@ Script em Node.js + Puppeteer que automatiza buscas no Google Maps e coleta **em
 8. Opcionalmente, também busca e apresenta leads que possuem site para confirmação manual (`y/n`).
 9. Ao final (ou com Ctrl+C), exibe uma tabela com os leads novos e a contagem por nicho.
 
+A duplicidade é verificada assim que o telefone é coletado no Google Maps. Quando o
+telefone já está em `leads.json`, o card é ignorado imediatamente: o fallback não é
+executado e nenhuma confirmação manual de site é solicitada.
+
 ## Requisitos
 
 - [Node.js](https://nodejs.org/) 18 ou superior (recomendado: versão LTS)
@@ -141,7 +145,16 @@ node minerar_leads.js
 - `distancia_km`: distância até o centro da busca (pode ser `null` se o Maps não informar coordenadas).
 - `status`: começa como `pendente`, para você controlar o andamento da prospecção.
 
-Além do JSON, o arquivo `leads_prontos_crm.csv` é recriado após cada novo lead, com as colunas necessárias para o import no CRM. Todos os campos são delimitados por aspas duplas; endereço, nicho, cidade, distância, redes sociais e observações ficam reunidos em `Notes`, cada tópico em uma nova linha. São identificadas redes do Instagram, Facebook, LinkedIn, TikTok e YouTube quando o Google Maps disponibilizar os links.
+Além do JSON, o arquivo `leads_prontos_crm.csv` é recriado após cada novo lead, com as colunas necessárias para o import no CRM. Todos os campos são delimitados por aspas duplas; endereço, nicho, cidade, distância, redes sociais e observações ficam reunidos em `Notes`, cada tópico em uma nova linha. São identificadas redes do Instagram, Facebook, LinkedIn, TikTok e YouTube quando o Google Maps disponibilizar os links; essas informações do Maps são aceitas sem validação. Redes encontradas no fallback do buscador só são salvas quando o perfil contém uma palavra distintiva do nome da empresa e também uma palavra do nicho ou da localização; resultados sem essas duas evidências são ignorados para evitar associar o perfil de outra empresa.
+Quando há mais de um perfil possível para a mesma rede, o fallback prioriza o candidato com maior pontuação de correspondência no endereço e no título do resultado.
+
+Sites encontrados pelo fallback são sempre tratados como candidatos e exigem confirmação manual, mesmo quando o telefone, a cidade ou o nome parecem compatíveis. A validação automática serve apenas para priorizar o candidato e não autoriza seu salvamento. Se o candidato for aceito manualmente, o lead é salvo, mas a URL candidata não é gravada no campo `site` do `leads.json`, pois ela não foi confirmada como site da empresa. Sites informados diretamente pelo Google Maps são aceitos sem validação: quando `incluir_com_site` está ativo, são salvos; quando está desativado, o lead é ignorado. A presença de um site no Maps também impede a execução do fallback. As `Notes` do CRM sempre incluem as linhas de Instagram e Facebook; quando uma rede não é encontrada, o valor fica como `rede social não encontrada`.
+
+Antes da confirmação manual de um site do fallback, o terminal informa quais evidências foram encontradas no conteúdo: telefone, cidade e palavras identificadas do nome da empresa. Se nenhuma correspondência for encontrada, isso também é exibido para orientar a decisão.
+
+As páginas do Google Maps e do fallback usam o cache HTTP do Chromium desativado. Os resultados do fallback são coletados novamente para cada lead e não são reutilizados entre empresas.
+
+O fallback faz três consultas por lead, sem aspas para evitar restringir os resultados: `nome da empresa + cidade`, `nome da empresa Instagram` e `nome da empresa Facebook`. Todos os resultados de cada consulta são analisados para redes sociais e candidatos de site; no máximo os cinco primeiros candidatos de site são abertos para validação. Para uma rede social ser aceita, o perfil precisa conter uma palavra significativa do nome da empresa e uma palavra do nicho ou da localização, no endereço do perfil ou no título do resultado.
 
 `leads.json`, `leads.csv` e `leads_prontos_crm.csv` são arquivos locais gerados durante a execução e não são enviados ao Git.
 
@@ -161,7 +174,7 @@ Se o arquivo já existir, o script o carrega e **não duplica** telefones já sa
 - **Navegador não abre:** defina `CHROME_PATH` com o caminho do executável.
 - **Nenhum lead capturado:** o Google Maps muda seus seletores CSS com frequência. Se isso acontecer, revise `h1.DUwDvf`, `a[data-item-id="authority"]` e `button[data-item-id^="phone:tel:"]`.
 - **Poucos resultados com raio pequeno:** o Maps limita quantos resultados mostra por busca. Aumente o raio ou use mais nichos.
-- **Cobertura espacial:** `pontos_busca` (ou `--pontos`) altera o número de centros consultados. O padrão 7 inclui o centro e seis pontos a 55% do raio ao redor; diminua para reduzir o tempo. A meta é aplicada por combinação de nicho e centro.
+- **Cobertura espacial:** `pontos_busca` (ou `--pontos`) altera o número de centros consultados. O padrão 7 inclui o centro e seis pontos a 55% do raio ao redor; diminua para reduzir o tempo. A meta é aplicada por nicho dentro de cada local, acumulando os leads encontrados nos diferentes centros.
 - **Emojis quebrados no terminal do Windows:** use o Windows Terminal ou rode `chcp 65001` antes do script.
 - **Busca travando:** aumente os valores de `sleep()` em conexões lentas.
 
