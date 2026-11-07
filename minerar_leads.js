@@ -202,6 +202,31 @@ const URLS_BLACKLIST_SITE = [
     'linktr.ee'
 ];
 
+const DOMINIOS_NAO_SITE_PROPRIO = [
+    'facebook.com',
+    'instagram.com',
+    'linkedin.com',
+    'youtube.com',
+    'tiktok.com',
+    'x.com',
+    'twitter.com',
+    'pinterest.com',
+    'snapchat.com',
+    'threads.net',
+    'whatsapp.com',
+    'wa.me',
+    'telegram.me',
+    't.me',
+    'linktr.ee',
+    'beacons.ai',
+    'bio.site',
+    'lnk.bio',
+    'taplink.cc',
+    'solo.to',
+    'campsite.bio',
+    'allmylinks.com'
+];
+
 function normalizarTexto(texto) {
     return String(texto || '')
         .normalize('NFD')
@@ -255,6 +280,19 @@ function extrairCidadeDoEndereco(endereco) {
 function urlEstaNaBlacklist(url) {
     const urlNormalizada = normalizarTexto(url);
     return URLS_BLACKLIST_SITE.some(termo => urlNormalizada.includes(termo));
+}
+
+function siteDoMapsIndicaSiteProprio(site) {
+    if (typeof site !== 'string' || !site.trim()) return false;
+
+    try {
+        const hostname = new URL(site).hostname.toLowerCase().replace(/^www\./, '');
+        return !DOMINIOS_NAO_SITE_PROPRIO.some(dominio =>
+            hostname === dominio || hostname.endsWith(`.${dominio}`)
+        );
+    } catch (erro) {
+        return true;
+    }
 }
 
 function obterUrlResultado(url) {
@@ -567,6 +605,7 @@ async function confirmarSite(lead, site, evidencias) {
         output: process.stdout,
         terminal: true
     });
+    rl.on('SIGINT', () => process.emit('SIGINT'));
 
     try {
         while (true) {
@@ -681,6 +720,10 @@ async function perguntar(rl, texto, padrao) {
     return resposta || String(padrao);
 }
 
+function encaminharSigint(rl) {
+    rl.on('SIGINT', () => process.emit('SIGINT'));
+}
+
 async function obterConfig() {
     const args = lerArgumentos();
     const configPadrao = carregarConfiguracao();
@@ -707,6 +750,7 @@ async function obterConfig() {
     if (interativo) {
         console.log(`${c.negrito}⚙️  Configuração da busca${c.reset} ${c.cinza}(Enter aceita o padrão)${c.reset}\n`);
         const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        encaminharSigint(rl);
         local = await perguntar(rl, '📍 Localização (cidade, endereço ou "lat,lng"; vários com ";")', configPadrao.local);
         raio = await perguntar(rl, '📏 Raio de atuação em km', configPadrao.raio);
         nichos = await perguntar(rl, '🏷️  Nichos (separados por vírgula)', configPadrao.nichos.join(', '));
@@ -816,7 +860,21 @@ function extrairCoordenadas(texto) {
 // ==========================================
 // 5. RESUMO NO TERMINAL
 // ==========================================
-const estado = { novos: [], browser: null, totalBase: 0, encerrando: false };
+const estado = {
+    novos: [],
+    leads: null,
+    assigned: '',
+    browser: null,
+    totalBase: 0,
+    encerrando: false
+};
+
+function exportarEstadoParaCRM() {
+    const leadsAtualizados = carregarLeadsExistentes();
+    estado.leads = leadsAtualizados;
+    estado.totalBase = leadsAtualizados.length;
+    exportarParaCRM(leadsAtualizados, estado.assigned, estado.novos);
+}
 
 function exibirResumo() {
     const novos = estado.novos;
@@ -850,6 +908,7 @@ process.on('SIGINT', async () => {
     if (estado.encerrando) process.exit(1);
     estado.encerrando = true;
     console.log(`\n${c.amarelo}⏹️  Interrompido pelo usuário.${c.reset}`);
+    exportarEstadoParaCRM();
     exibirResumo();
     await fecharNavegadorSeguro(estado.browser);
     process.exit(0);
@@ -862,8 +921,9 @@ async function minerarLeads() {
     const config = await obterConfig();
 
     let todosLeads = carregarLeadsExistentes();
+    estado.leads = todosLeads;
+    estado.assigned = config.assigned;
     estado.totalBase = todosLeads.length;
-    exportarParaCRM(todosLeads);
     // Set com os telefones já salvos para nunca duplicar contatos
     const telefonesSalvos = new Set(todosLeads.map(lead => lead.telefone));
 
@@ -887,6 +947,7 @@ async function minerarLeads() {
 
     if (!locais.length) {
         console.log(`${c.vermelho}Nenhum local válido. Tente informar "lat,lng" direto em --local.${c.reset}`);
+        exportarEstadoParaCRM();
         return;
     }
 
@@ -1061,7 +1122,8 @@ async function minerarLeads() {
                                 }
                             }
 
-                            dadosEmpresa.temSite = Boolean(dadosEmpresa.site);
+                            const siteInformadoPeloMaps = Boolean(dadosEmpresa.site);
+                            dadosEmpresa.temSite = siteDoMapsIndicaSiteProprio(dadosEmpresa.site);
                             if (!dadosEmpresa.temSite) {
                                 dadosEmpresa.site = null;
                             }
@@ -1090,6 +1152,8 @@ async function minerarLeads() {
                                 }, paginaFallback);
                             if (dadosEmpresa.temSite) {
                                 console.log(`${c.cinza}ℹ️ Fallback não realizado para "${dadosEmpresa.nome}": site informado pelo Google Maps.${c.reset}`);
+                            } else if (siteInformadoPeloMaps) {
+                                console.log(`${c.ciano}ℹ️ Site do Google Maps não é um site próprio; fallback realizado para "${dadosEmpresa.nome}".${c.reset}`);
                             }
                             dadosEmpresa.site = dadosFaltantes.site;
                             dadosEmpresa.redesSociais = dadosFaltantes.redes_sociais;
@@ -1132,7 +1196,6 @@ async function minerarLeads() {
 
                                     salvarNovoLead(novoLead, todosLeads);
                                     estado.novos.push(novoLead);
-                                    exportarParaCRM(todosLeads, config.assigned, estado.novos);
                                     estado.totalBase = todosLeads.length;
                                     telefonesSalvos.add(telefoneFormatado);
                                     leadsNesteNicho++;
@@ -1167,6 +1230,7 @@ async function minerarLeads() {
             }
         }
     } finally {
+        exportarEstadoParaCRM();
         await fecharPaginaSegura(paginaFallback);
         await fecharPaginaSegura(page);
         await fecharNavegadorSeguro(browser);
@@ -1189,5 +1253,6 @@ module.exports = {
     filtrarRedesSociaisDoLead,
     redePertenceAoLead,
     siteFoiValidado,
+    siteDoMapsIndicaSiteProprio,
     extrairCidadeDoEndereco
 };
