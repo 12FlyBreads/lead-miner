@@ -166,6 +166,14 @@ node limpar_leads.js
 
 Esse comando redefine `leads.json` para `[]` e mantém somente o cabeçalho em `leads_prontos_crm.csv`.
 
+Para apagar somente os leads de um nicho específico nos dois arquivos:
+
+```bash
+node limpar_leads.js --nicho "Pet Shop"
+```
+
+O nome do nicho não diferencia maiúsculas de minúsculas. Os demais leads e o cabeçalho do CSV são preservados.
+
 Se o arquivo já existir, o script o carrega e **não duplica** telefones já salvos, então é seguro rodar várias vezes. Leads antigos, sem `endereco` e `distancia_km`, continuam válidos.
 
 ## Solução de problemas

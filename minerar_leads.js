@@ -644,6 +644,10 @@ function salvarNovoLead(novoLead, listaCompleta) {
 
 function exportarParaCRM(leads, assigned, leadsDaRonda = []) {
     const escaparCsv = (valor) => `"${String(valor ?? '').replace(/"/g, '""')}"`;
+    const telefoneParaNotas = (telefone) => {
+        const digitos = String(telefone ?? '').replace(/\D/g, '');
+        return digitos.startsWith('550') ? `55${digitos.slice(3)}` : digitos;
+    };
     const telefonesDaRonda = new Set(leadsDaRonda.map(lead => lead.telefone));
     const nomeParaCRM = (lead) => lead.cidade
         ? `${lead.nome} - ${lead.cidade}`
@@ -661,6 +665,7 @@ function exportarParaCRM(leads, assigned, leadsDaRonda = []) {
             lead.endereco && `Endereço: ${lead.endereco}`,
             lead.site && `Site: ${lead.site}`,
             lead.nicho && `Nicho: ${lead.nicho}`,
+            lead.telefone && `Telefone: ${telefoneParaNotas(lead.telefone)}`,
             lead.cidade && `Cidade: ${lead.cidade}`,
             `Possível Instagram: ${lead.redes_sociais?.Instagram || 'rede social não encontrada'}`,
             `Possível Facebook: ${lead.redes_sociais?.Facebook || 'rede social não encontrada'}`,
